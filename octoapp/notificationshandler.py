@@ -279,7 +279,7 @@ class NotificationsHandler:
         self._updateCurrentFileName(fileName_CanBeNone)
         self._updateToKnownDuration(durationSecStr_CanBeNone)
         self.StopTimers()
-        self.__cancelDelayedPause()
+        self._cancelDelayedPause()
         self._sendEvent(NotificationSender.EVENT_DONE, useFinalSnapSnapshot=True)
 
 
@@ -969,7 +969,7 @@ class NotificationsHandler:
             Sentry.ExceptionNoSend("_getCurrentProgressFloat failed to compute progress.", e)
 
         # On failure, default to what OctoPrint has reported.
-        return float(self.FallbackProgressInt)
+        return float(self.FallbackProgressInt) if isinstance(self.FallbackProgressInt, int) else 0.0
 
 
     # Sends the event
@@ -1082,6 +1082,7 @@ class NotificationsHandler:
             progressFloat = progressOverwriteFloat
         else:
             progressFloat = self._getCurrentProgressFloat()
+
         args["ProgressPercentage"] = str(int(progressFloat))
 
         # Always add the current duration
