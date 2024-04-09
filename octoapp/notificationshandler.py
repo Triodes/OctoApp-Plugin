@@ -1059,7 +1059,7 @@ class NotificationsHandler:
         args["Event"] = event
 
         # Always add the file name and other common props
-        args["FileName"] = str(self.CurrentFileName)
+        args["FileName"] = str(self.CurrentFileName).split("/")[-1]
         args["FileSizeKb"] = str(self.CurrentFileSizeInKBytes)
         args["FilamentUsageMm"] = str(self.CurrentEstFilamentUsageMm)
 
