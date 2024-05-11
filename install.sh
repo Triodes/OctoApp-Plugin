@@ -256,14 +256,15 @@ install_or_update_python_env()
     "${OCTOAPP_ENV}"/bin/pip3 install -q -r "${OCTOAPP_REPO_DIR}"/requirements.txt
     log_info "Python libs installed."
 
-     log_info "Attempting to install optinal python libs..."
-     "${OCTOAPP_ENV}"/bin/pip3 install -q -r "${OCTOAPP_REPO_DIR}"/requirements_try.txt || PIP_FAILED="true"
-     if [ "$PIP_FAILED" = "true" ]; then 
-        log_error "Failed to install optional python libraries. Optional end-to-end encryption for Android notification is not possible. Continuing..." 
-    else
-        log_info "Python libs installed."  
+    if [[ $IS_K1_OS -ne 1 ]]
+        log_info "Attempting to install optinal python libs..."
+         "${OCTOAPP_ENV}"/bin/pip3 install -q -r "${OCTOAPP_REPO_DIR}"/requirements_try.txt || PIP_FAILED="true"
+        if [ "$PIP_FAILED" = "true" ]; then 
+            log_error "Failed to install optional python libraries. Optional end-to-end encryption for Android notification is not possible. Continuing..." 
+        else
+            log_info "Python libs installed."  
+        fi;
     fi;
-
 }
 
 #
