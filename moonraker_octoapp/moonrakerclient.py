@@ -1,15 +1,19 @@
 import os
+import sys
 import threading
 import time
 import json
 import queue
 import logging
 import math
+import urllib.request
+from urllib.parse import quote
 
 import configparser
 from octoapp.compat import Compat
 
 from octoapp.sentry import Sentry
+from octoapp.notificationutils import NotificationUtils
 from octoapp.websocketimpl import Client
 from octoapp.notificationshandler import NotificationsHandler
 from .moonrakercredentailmanager import MoonrakerCredentialManager
@@ -81,6 +85,7 @@ class MoonrakerClient:
         self.ConnectionStatusHandler = connectionStatusHandler
         self.PluginVersionStr = pluginVersionStr
         self.MoonrakerDatabase = moonrakerDatabase
+        self.ScheduledNotificationsCache = {}
 
         # Setup the json-rpc vars
         self.JsonRpcIdLock = threading.Lock()
@@ -351,6 +356,7 @@ class MoonrakerClient:
                         if "filename" in jobObj:
                             fileName = jobObj["filename"]
                             self.MoonrakerCompat.OnPrintStart(fileName)
+                            self.DownloadFileForProcessing(fileName)
                             return
                 elif action == "finished":
                     # This can be a finish canceled or failed.
@@ -374,6 +380,7 @@ class MoonrakerClient:
         if method == "notify_status_update":
             # This is shared by a few things, so get it once.
             progressFloat_CanBeNone = self._GetProgressFromMsg(msg)
+            filePos_CanBeNone = self._GetFilePosFromMsg(msg)
 
             # Check for a state container
             stateContainerObj = self._GetWsMsgParam(msg, "print_stats")
@@ -399,12 +406,34 @@ class MoonrakerClient:
 
             # Report progress. Do this after the others so they will report before a potential progress update.
             # Progress updates super frequently (like once a second) so there's plenty of chances.
-            if progressFloat_CanBeNone is not None:
-                self.MoonrakerCompat.OnPrintProgress(progressFloat_CanBeNone)
+            if progressFloat_CanBeNone is not None and filePos_CanBeNone is not None:
+                self.MoonrakerCompat.OnPrintProgress(progressFloat_CanBeNone, filePos_CanBeNone)
 
         # When the webcams change, kick the webcam helper.
         if method == "notify_webcams_changed":
             self.ConnectionStatusHandler.OnWebcamSettingsChanged()
+
+    def DownloadFileForProcessing(self, fileName):
+        try:
+            modified = FileMetadataCache.Get().GetModified(fileName)
+            cacheKey = fileName + ":" + str(modified)
+
+            if cacheKey in self.ScheduledNotificationsCache.keys():
+                Sentry.Info("Client", "Reusing cached notifications for " + fileName)
+                self.MoonrakerCompat.ScheduleNotifications(self.ScheduledNotificationsCache[cacheKey])
+                return
+
+            path = '/'.join(list(map(quote, fileName.split("/"))))
+            url = "http://" + self.MoonrakerHostAndPort + "/server/files/gcodes/" + path
+            Sentry.Info("Client", "Processing file at %s" % url)
+            with urllib.request.urlopen(url) as response:
+                notifications = NotificationUtils.ExtractNotifications(response)
+                self.MoonrakerCompat.ScheduleNotifications(notifications)
+                Sentry.Info("Client", "File processed")
+                self.ScheduledNotificationsCache[cacheKey] = notifications
+
+        except Exception as e:
+            Sentry.ExceptionNoSend("Failed to download file for notification processing", e)
 
 
     # If the message has a progress contained in the virtual_sdcard, this returns it. The progress is a float from 0.0->1.0
@@ -415,6 +444,17 @@ class MoonrakerClient:
             vsd = vsdContainerObj["virtual_sdcard"]
             if "progress" in vsd:
                 return vsd["progress"]
+        return None
+
+    
+    # If the message has a progress contained in the virtual_sdcard, this returns it
+    # Otherwise None
+    def _GetFilePosFromMsg(self, msg):
+        vsdContainerObj = self._GetWsMsgParam(msg, "virtual_sdcard")
+        if vsdContainerObj is not None:
+            vsd = vsdContainerObj["virtual_sdcard"]
+            if "file_position" in vsd:
+                return vsd["file_position"]
         return None
 
 
@@ -719,6 +759,11 @@ class MoonrakerCompat:
         self.NotificationHandler = NotificationsHandler(self)
         # self.NotificationHandler.SetPrinterId(printerId)
 
+        # Set the LastFilePos to a high value so the layer notifications are not send if the plugin
+        # is started during a print
+        self.LastFilePos = sys.maxsize
+        self.ScheduledNotifications = {}
+
 
     def GetNotificationHandler(self):
         return self.NotificationHandler
@@ -815,12 +860,22 @@ class MoonrakerCompat:
 
         # Fire on started.
         self.NotificationHandler.OnStarted(fileName, fileSizeKBytes, filamentUsageMm)
+        self.ScheduledNotifications = {}
+        self.LastFilePos = 0
 
     def _updatePrinterName(self):
-        # Get our name
-        name = MoonrakerClient.Get().MoonrakerDatabase.GetPrinterName()
-        self.NotificationHandler.NotificationSender.PrinterName = name
-        Sentry.Info("Client", "Printer is called %s" % name)
+        try:
+            # Get our name
+            name = MoonrakerClient.Get().MoonrakerDatabase.GetPrinterName()
+            self.NotificationHandler.NotificationSender.PrinterName = name
+            Sentry.Info("Client", "Printer is called %s" % name)
+        except Exception as e:
+            Sentry.ExceptionNoSend("Failed to update printer name", e)
+
+
+    def ScheduleNotifications(self, notifications):
+        self.ScheduledNotifications = notifications
+
 
     def OnDone(self):
         # Only process notifications when ready, aka after state sync.
@@ -873,10 +928,14 @@ class MoonrakerCompat:
 
 
     # Called when there's a print percentage progress update.
-    def OnPrintProgress(self, progressFloat):
+    def OnPrintProgress(self, progressFloat, filePos):
         # Only process notifications when ready, aka after state sync.
         if self.IsReadyToProcessNotifications is False:
             return
+        
+        # Trigger scheduled notifications
+        NotificationUtils.SendScheduledNotifications(self.ScheduledNotifications, self.NotificationHandler, filePos, self.LastFilePos)
+        self.LastFilePos = filePos
 
         # Moonraker sends about 3 of these per second, which is way faster than we need to process them.
         nowSec = time.time()
@@ -1070,6 +1129,8 @@ class MoonrakerCompat:
         Sentry.Info("Client", "Printer state at socket connect is: "+state)
         self._updatePrinterName()
         self.NotificationHandler.OnRestorePrintIfNeeded(state, fileName_CanBeNone, totalDurationFloatSec_CanBeNone)
+        if fileName_CanBeNone:
+            MoonrakerClient.Get().DownloadFileForProcessing(fileName_CanBeNone)
 
 
     # Queries moonraker for the current printer stats.

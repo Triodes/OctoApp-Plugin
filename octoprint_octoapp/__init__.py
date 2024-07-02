@@ -6,6 +6,7 @@ from datetime import datetime
 
 import time
 import flask
+import octoprint.printer
 import requests
 import octoprint.plugin
 import logging
@@ -29,6 +30,7 @@ from .mmu2filamentselect import OctoAppMmu2FilamentSelectSubPlugin
 from .webcamsnapshots import OctoAppWebcamSnapshotsSubPlugin
 from .printerstateobject import PrinterStateObject
 from .octoprintwebcamhelper import OctoPrintWebcamHelper
+from .layerprocessor import LayerProcessor
 
 class OctoAppPlugin(octoprint.plugin.AssetPlugin,
                     octoprint.plugin.ProgressPlugin,
@@ -37,7 +39,8 @@ class OctoAppPlugin(octoprint.plugin.AssetPlugin,
                     octoprint.plugin.SimpleApiPlugin,
                     octoprint.plugin.SettingsPlugin,
                     octoprint.plugin.EventHandlerPlugin,
-                    octoprint.plugin.RestartNeedingPlugin):
+                    octoprint.plugin.RestartNeedingPlugin,
+                    octoprint.printer.PrinterCallback):
     
     def __init__(self):
         # Update logger
@@ -90,6 +93,9 @@ class OctoAppPlugin(octoprint.plugin.AssetPlugin,
 
         # Indicate this has been called and things have been inited.
         self.HasOnStartupBeenCalledYet = True
+
+        # Hook up events
+        self._printer.register_callback(self)
 
 
     # Mixin method
@@ -157,6 +163,14 @@ class OctoAppPlugin(octoprint.plugin.AssetPlugin,
                 Sentry.ExceptionNoSend("Failed to handle progress", e)
 
 
+    def on_printer_send_current_data(self, data):
+        for sp in self.SubPlugins:
+            try:
+                sp.OnCurrentData(data=data)
+            except Exception as e:
+                Sentry.ExceptionNoSend("Failed to handle current data", e)
+
+
     # Mixin method
     def on_event(self, event, payload):
         for sp in self.SubPlugins:
@@ -193,11 +207,17 @@ class OctoAppPlugin(octoprint.plugin.AssetPlugin,
 
 
     def OnGcodeQueued(self, comm_instance, phase, cmd, cmd_type, gcode, *args, **kwargs):
+        send = True
         for sp in self.SubPlugins:
             try:
-                sp.OnGcodeQueued(comm_instance=comm_instance, phase=phase, cmd=cmd, cmd_type=cmd_type, gcode=gcode, args=args, kwargs=kwargs)
+                send = send and sp.OnGcodeQueued(comm_instance=comm_instance, phase=phase, cmd=cmd, cmd_type=cmd_type, gcode=gcode, args=args, kwargs=kwargs)
             except Exception as e:
                 Sentry.ExceptionNoSend("Failed to handle gcode queued", e)
+        
+        # If we should not send the ocmmand to the printer, return a None, value
+        if send is False:
+            Sentry.Debug("Main", "Supressing Gcode: " + cmd)
+            return None,
 
 
     def OnGcodeSent(self, comm_instance, phase, cmd, cmd_type, gcode, *args, **kwargs):
@@ -298,4 +318,5 @@ def __plugin_load__():
         "octoprint.comm.protocol.firmware.info": __plugin_implementation__.OnFirmwareInfoReceived,
         "octoprint.access.permissions": __plugin_implementation__.GetAdditionalPermissions,
         "octoprint.server.sockjs.emit": __plugin_implementation__.OnEmitWebsocketMessage,
+        "octoprint.filemanager.preprocessor": LayerProcessor.InsertLayerChanges
     }
