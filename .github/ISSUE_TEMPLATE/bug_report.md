@@ -8,4 +8,4 @@ assignees: crysxd
 
 ---
 
-## Please do not open tickets with bugs. Use the app's bug report feature instead (main menu > FAQ & help > report a bug)
+## Please do not open tickets with bugs. Use the app's bug report feature instead (main menu > FAQ & help > report a bug). If this is not possible, send an email to hello@octoapp.eu. 
