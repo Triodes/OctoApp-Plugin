@@ -1,8 +1,8 @@
 
 class LayerUtils:
     
-    LayerChangeCommand = "OCTOAPP_LAYER_CHANGE"
-    DisableLegacyLayerCommand = "OCTOAPP_DISABLE_LAYER_MAGIC"
+    LayerChangeCommand = "M117 OCTOAPP_LAYER_CHANGE"
+    DisableLegacyLayerCommand = "M117 OCTOAPP_DISABLE_LAYER_MAGIC"
 
     @staticmethod
     def CreateLayerChangeCommand(layer):
